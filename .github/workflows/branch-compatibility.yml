@@ -80,8 +80,7 @@ jobs:
         run: git fetch --no-tags origin master
 
       - name: Review compatibility
-        run: >-
-          .github/scripts/check-branch-compatibility.sh
-          origin/master
-          '${{ matrix.sha }}'
-          'PR #${{ matrix.pr }} (${{ matrix.branch }})'
+        env:
+          FEATURE_LABEL: PR #${{ matrix.pr }} (${{ matrix.branch }})
+          FEATURE_SHA: ${{ matrix.sha }}
+        run: .github/scripts/check-branch-compatibility.sh origin/master "$FEATURE_SHA" "$FEATURE_LABEL"
