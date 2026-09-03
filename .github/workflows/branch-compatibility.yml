@@ -1,0 +1,87 @@
+name: Branch compatibility agent
+
+on:
+  push:
+    branches:
+      - '**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: branch-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check_pushed_branch:
+    if: github.ref_name != 'master'
+    name: Check ${{ github.ref_name }} against master
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+
+      - name: Fetch latest master
+        run: git fetch --no-tags origin master
+
+      - name: Review compatibility
+        run: .github/scripts/check-branch-compatibility.sh origin/master "$GITHUB_SHA" "$GITHUB_REF_NAME"
+
+  discover_open_prs:
+    if: github.ref_name == 'master'
+    name: Find feature branches
+    runs-on: ubuntu-latest
+    outputs:
+      has_targets: ${{ steps.prs.outputs.has_targets }}
+      targets: ${{ steps.prs.outputs.targets }}
+    steps:
+      - id: prs
+        name: Find open pull requests targeting master
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          targets=$(
+            gh api --paginate \
+              -H 'Accept: application/vnd.github+json' \
+              "/repos/${GITHUB_REPOSITORY}/pulls?state=open&base=master&per_page=100" |
+              jq -sc --arg repository "$GITHUB_REPOSITORY" \
+                '{include: [.[][] | select(.head.repo.full_name == $repository) |
+                  {pr: .number, branch: .head.ref, sha: .head.sha}] | unique_by(.pr)}'
+          )
+
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
+          echo "has_targets=$(jq -r '.include | length > 0' <<< "$targets")" >> "$GITHUB_OUTPUT"
+
+          if [[ $(jq -r '.include | length' <<< "$targets") -eq 0 ]]; then
+            echo "No open pull requests from repository branches target master." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  check_after_master_update:
+    if: needs.discover_open_prs.outputs.has_targets == 'true'
+    needs: discover_open_prs
+    name: Check PR #${{ matrix.pr }} (${{ matrix.branch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover_open_prs.outputs.targets) }}
+    steps:
+      - name: Check out feature branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          ref: ${{ matrix.sha }}
+
+      - name: Fetch latest master
+        run: git fetch --no-tags origin master
+
+      - name: Review compatibility
+        run: >-
+          .github/scripts/check-branch-compatibility.sh
+          origin/master
+          '${{ matrix.sha }}'
+          'PR #${{ matrix.pr }} (${{ matrix.branch }})'
